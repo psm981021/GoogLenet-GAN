@@ -7,12 +7,10 @@ import matplotlib.pyplot as plt
 import torchvision
 from torch.utils.data import Dataset, DataLoader, ConcatDataset
 from torchvision import transforms
-from PIL import Image
 from collections import OrderedDict
-#from googLenet_practice import MyGoogleNet
-import zipfile
-import shutil
-import random
+import torch.optim as optim
+
+
 
 
 import torchvision.models as models
@@ -48,50 +46,11 @@ def load_data(data_folder, batch_size, num_workers):
     data_loader = torch.utils.data.DataLoader(data, batch_size=batch_size, shuffle=True, num_workers = num_workers)
     return data_loader 
 
-
-
-
-#unzipping file
-"""
-os.chdir('/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog')
-file_list = ['train.zip','test1.zip']
-
-
-for file in file_list:
-    zip_ref = zipfile.ZipFile(file, 'r')
-    zip_ref.extractall()
-    zip_ref.close()
-    
-# shifting jpg file to a specific folder
-category = []
-filenames = os.listdir('/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train')
-od = '/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog'
-for file in filenames:
-    if file != "cat" and file != "dog" : 
-        if os.path.isdir(od + file) == False:
-            category = file.split('.')[0]
-            if category == 'dog':
-                shutil.move('/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train/' + file, '/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train/dog/' + file)
-            else:
-                shutil.move('/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train/' + file, '/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train/cat/' + file)
-        else: pass
-"""
-
-
-
 data_folder = '/Users/parkseongbeom/pytorch-test/deeplearning_practice/cat vs dog/train'
 batch_size = 32
 num_workers = 0
 dataloader = load_data(data_folder, batch_size, num_workers)
 
-"""
-for batch_idx, (samples, labels) in enumerate(dataloader):
-    print(f"Batch {batch_idx+1}:")
-    print("Samples shape:", samples.shape)
-    print("Labels shape:", labels.shape)
-    print("---")
-
-"""
 """#visualization
 
 random_batch = random.choice(list(dataloader))
@@ -140,7 +99,7 @@ for epoch in range(epochs):
         
         #for param in model.parameters():
         #    param.requires_grad = True
-        #o,o1,o2 = model(samples)
+        #o,o1,o2 = model(samples) -> googlenet outputs using eager output
         _loss = model(samples)
         
         #check labels
@@ -167,8 +126,97 @@ for epoch in range(epochs):
             
         itr += 1
 
-plt.plot(loss_list, label='loss')
-plt.plot(acc_list, label='accuracy')
-plt.legend()
-plt.title('training loss and accuracy')
-plt.show()
+# extract a feature with trained googlenet give it a condition to GAN
+# train googlenet to extract features to identify cat and dogs
+# with trained features extract inorder to use it as a condition for C-GAN
+# to find out whether the models are trained give several inputs and test out whether the training holds and gan actually works
+
+input_image = ''#!!
+input_image = transforms(input_image)
+input_image = input_image.unsqueeze(0)  # Add batch dimension
+
+
+num_epochs = 100
+
+feature = model(input_image)
+
+
+# Convert the extracted features to a tensor
+conditional_data = feature.clone().detach()
+
+import torch.nn as nn
+
+# !!기초적인 GAN -> 확인해야함
+class Generator(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(Generator, self).__init__()
+        self.fc = nn.Linear(input_size + num_classes, 1024)
+        # Add more layers as needed
+
+    def forward(self, features, conditional_data):
+        x = torch.cat([features, conditional_data], dim=1)
+        x = self.fc(x)
+        # Apply additional layers and transformations
+        return x
+
+# Define the discriminator architecture
+class Discriminator(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(Discriminator, self).__init__()
+        self.fc = nn.Linear(input_size + num_classes, 1)
+        # Add more layers as needed
+
+    def forward(self, image, features, conditional_data):
+        x = torch.cat([image, features, conditional_data], dim=1)
+        x = self.fc(x)
+        # Apply additional layers and transformations
+        return x
+    
+    
+# !!check whether num_class holds
+generator = Generator(input_size=model.fc.out_features, num_classes=2)
+discriminator = Discriminator(input_size=model.fc.out_features, num_classes=2)
+
+# !! 차이 확인, 해당 코드는 model feature를 직접적으로 c-gan의 condition으로 사용하려고 한다.
+#generator = Generator(input_size=feature.size(1), num_classes=2)
+#discriminator = Discriminator(input_size=feature.size(1), num_classes=2)
+
+
+# Define loss function and optimizer
+adversarial_loss = nn.BCEWithLogitsLoss()
+generator_optimizer = optim.Adam(generator.parameters(), lr=0.0002, betas=(0.5, 0.999))
+discriminator_optimizer = optim.Adam(discriminator.parameters(), lr=0.0002, betas=(0.5, 0.999))
+
+# Training loop
+for epoch in range(num_epochs):
+    for real_images, _ in dataloader:  # Replace 'dataloader' with your actual data loading mechanism
+        batch_size = real_images.size(0)
+
+        # Generate fake images using the generator
+        fake_images = generator(feature, conditional_data)
+        
+        # Train the discriminator
+        discriminator_real_outputs = discriminator(real_images, feature, conditional_data)
+        discriminator_fake_outputs = discriminator(fake_images.detach(), feature, conditional_data)
+        
+        discriminator_real_loss = adversarial_loss(discriminator_real_outputs, torch.ones(batch_size, 1))
+        discriminator_fake_loss = adversarial_loss(discriminator_fake_outputs, torch.zeros(batch_size, 1))
+        discriminator_loss = discriminator_real_loss + discriminator_fake_loss
+
+        discriminator_optimizer.zero_grad()
+        discriminator_loss.backward()
+        discriminator_optimizer.step()
+
+        # Train the generator
+        discriminator_fake_outputs = discriminator(fake_images, feature, conditional_data)
+        generator_loss = adversarial_loss(discriminator_fake_outputs, torch.ones(batch_size, 1))
+
+        generator_optimizer.zero_grad()
+        generator_loss.backward()
+        generator_optimizer.step()
+"""
+With these changes, CGAN will now be conditioned on the features extracted from the trained GoogLeNet model. 
+The generator takes the features as input and generates fake images, 
+while the discriminator receives both real and fake images along with the corresponding features as input for discrimination.
+
+"""
