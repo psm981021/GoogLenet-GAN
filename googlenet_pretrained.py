@@ -1,5 +1,3 @@
-
-
 import numpy as np
 import pandas as pd
 import os
@@ -57,7 +55,8 @@ if __name__ == '__main__':
     ])
     input_tensor = preprocess(input_image)
     input_tensor = input_tensor.reshape(1, 3, 224, 224)
-    output = model(input_tensor)
+    output, feature = model(input_tensor)
+    print(feature.size())
     pred = torch.argmax(output, dim=1)
     pred = [p.item() for p in pred]
     if pred[0] == 0:
