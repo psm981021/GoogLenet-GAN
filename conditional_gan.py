@@ -44,29 +44,29 @@ class feature_extractor():
         self.model.load_state_dict(torch.load("./model/googlenet_pretrained.pt", map_location=torch.device('cpu')), strict=False, )
         self.model.eval()
 
-    def extract_feature(self,label):
-        if label == 'dog':
-            select_list = os.listdir("C:\Users\soyunjung\Documents\GitHub\deeplearning\dataset\dogs_vs_cats\train\dogs")
-        else: 
-            select_list = os.listdir("C:\Users\soyunjung\Documents\GitHub\deeplearning\dataset\dogs_vs_cats\train\cats")
-        selected = random.sample(select_list, 1)
-        input_image = Image.open(selected)
+    def extract_feature(self, labels):
+        features = torch.FloatTensor(len(labels), 1024) # batch_size, feature_shape(1, 1024)
+        for i, label in enumerate(labels):
 
-        preprocess = transforms.Compose([
-            transforms.Resize((224,224)),
-            transforms.ToTensor()
-        ])
-        input_tensor = preprocess(input_image)
-        input_tensor = input_tensor.reshape(1, 3, 224, 224)
-        output, feature = self.model(input_tensor)
+            if label == 0: # cat
+                input_image = Image.open("./dataset/cat.jpg")
+            else: # dog
+                input_image = Image.open("./dataset/dog.jpg")
+            preprocess = transforms.Compose([
+                transforms.Resize((224,224)),
+                transforms.ToTensor()
+            ])
+            input_tensor = preprocess(input_image)
+            input_tensor = input_tensor.reshape(1, 3, 224, 224)
+            output, feature = self.model(input_tensor)
+            feature = feature[0].reshape(-1)
+            features[i] = feature
 
-        return feature, input_image
+        return features
 
 class Generator(nn.Module):
     def __init__(self):
         super(Generator, self).__init__()
-
-        # self.label_emb = nn.Embedding(opt.n_classes, opt.n_classes) # MNIST 경우 
 
         def block(in_feat, out_feat, normalize=True):
             layers = [nn.Linear(in_feat, out_feat)]
@@ -76,7 +76,8 @@ class Generator(nn.Module):
             return layers
 
         self.model = nn.Sequential(
-            *block(opt.latent_dim + opt.n_classes, 128, normalize=False),
+            #*block(opt.latent_dim + opt.n_classes, 128, normalize=False),
+            *block(1124, 128, normalize=False),
             *block(128, 256),
             *block(256, 512),
             *block(512, 1024),
@@ -84,11 +85,10 @@ class Generator(nn.Module):
             nn.Tanh()
         )
 
-    def forward(self, noise, labels, feature_extractor):
+    def forward(self, noise, labels, featureExtractor):
         # Concatenate label embedding and image to produce input
-        feature, image = feature_extractor.extract_feature(labels)
 
-        gen_input = torch.cat((feature, noise), -1)
+        gen_input = torch.cat((featureExtractor.extract_feature(labels), noise), -1)
         img = self.model(gen_input)
         img = img.view(img.size(0), *img_shape)
         return img
@@ -98,10 +98,9 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
 
-        #self.label_embedding = nn.Embedding(opt.n_classes, opt.n_classes)
-
         self.model = nn.Sequential(
-            nn.Linear(opt.n_classes + int(np.prod(img_shape)), 512),
+            #nn.Linear(opt.n_classes + int(np.prod(img_shape)), 512),
+            nn.Linear(151552, 512),
             nn.LeakyReLU(0.2, inplace=True),
             nn.Linear(512, 512),
             nn.Dropout(0.4),
@@ -112,9 +111,9 @@ class Discriminator(nn.Module):
             nn.Linear(512, 1),
         )
 
-    def forward(self, img, labels, feature_extractor):
+    def forward(self, img, labels, featureExtractor):
         # Concatenate label embedding and image to produce input
-        d_in = torch.cat((img.view(img.size(0), -1), self.label_embedding(labels)), -1)
+        d_in = torch.cat((img.view(img.size(0), -1), featureExtractor.extract_feature(labels)), -1)
         validity = self.model(d_in)
         return validity
 
@@ -123,9 +122,9 @@ class Discriminator(nn.Module):
 adversarial_loss = torch.nn.MSELoss()
 
 # Initialize generator and discriminator
+featureExtractor = feature_extractor()
 generator = Generator()
 discriminator = Discriminator()
-featureExtractor = feature_extractor()
 
 if cuda:
     generator.cuda()
@@ -134,8 +133,11 @@ if cuda:
 
 # Configure data loader
 dataloader = torch.utils.data.DataLoader(
-    datasets.ImageFolder("C:\Users\soyunjung\Documents\GitHub\deeplearning\dataset\dogs_vs_cats\train"),
-    batch_size=opt.batch_size,
+    datasets.ImageFolder("C:/Users/soyunjung/Documents/GitHub/deeplearning/dataset/dogs_vs_cats/train", 
+                         transform=transforms.Compose(
+                            [transforms.Resize((224, 224)), transforms.ToTensor(), transforms.Normalize([0.5], [0.5])]
+        ),),
+    batch_size=64,
     shuffle=True,
 )
 
@@ -154,7 +156,7 @@ def sample_image(n_row, batches_done):
     # Get labels ranging from 0 to n_classes for n rows
     labels = np.array([num for _ in range(n_row) for num in range(n_row)])
     labels = Variable(LongTensor(labels))
-    gen_imgs = generator(z, labels)
+    gen_imgs = generator(z, labels, featureExtractor)
     save_image(gen_imgs.data, "images/%d.png" % batches_done, nrow=n_row, normalize=True)
 
 
@@ -186,10 +188,10 @@ for epoch in range(opt.n_epochs):
         gen_labels = Variable(LongTensor(np.random.randint(0, opt.n_classes, batch_size)))
 
         # Generate a batch of images
-        gen_imgs = generator(z, gen_labels)
+        gen_imgs = generator(z, gen_labels,featureExtractor)
 
         # Loss measures generator's ability to fool the discriminator
-        validity = discriminator(gen_imgs, gen_labels)
+        validity = discriminator(gen_imgs, gen_labels, featureExtractor)
         g_loss = adversarial_loss(validity, valid)
 
         g_loss.backward()
@@ -202,11 +204,11 @@ for epoch in range(opt.n_epochs):
         optimizer_D.zero_grad()
 
         # Loss for real images
-        validity_real = discriminator(real_imgs, labels)
+        validity_real = discriminator(real_imgs, labels, featureExtractor)
         d_real_loss = adversarial_loss(validity_real, valid)
 
         # Loss for fake images
-        validity_fake = discriminator(gen_imgs.detach(), gen_labels)
+        validity_fake = discriminator(gen_imgs.detach(), gen_labels, featureExtractor)
         d_fake_loss = adversarial_loss(validity_fake, fake)
 
         # Total discriminator loss

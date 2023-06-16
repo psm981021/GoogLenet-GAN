@@ -56,7 +56,11 @@ if __name__ == '__main__':
     input_tensor = preprocess(input_image)
     input_tensor = input_tensor.reshape(1, 3, 224, 224)
     output, feature = model(input_tensor)
+    feature = feature[0].reshape(1, -1)
+    # feature_np = feature.detach().numpy()
+    # np.save("C:/Users/soyunjung/Documents/GitHub/deeplearning/model/feature", feature)
     print(feature.size())
+    print(feature)
     pred = torch.argmax(output, dim=1)
     pred = [p.item() for p in pred]
     if pred[0] == 0:
